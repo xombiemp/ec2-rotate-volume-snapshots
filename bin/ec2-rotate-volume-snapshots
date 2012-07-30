@@ -79,6 +79,12 @@ volume_ids.each do |volume_id|
   # poor man's way to get a deep copy of our time_periods definition hash
   periods = Marshal.load(Marshal.dump(time_periods))
   
+  # set period offsets based on how many we are keeping of each period
+  hourly_offset = periods[:hourly][:keep] * periods[:hourly][:seconds]
+  daily_offset = periods[:daily][:keep] * periods[:daily][:seconds] + hourly_offset
+  weekly_offset = periods[:weekly][:keep] * periods[:weekly][:seconds] + daily_offset
+  monthly_offset = periods[:monthly][:keep] * periods[:monthly][:seconds] + weekly_offset
+  
   snapshots_to_keep = {}
   snapshots = all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
   
@@ -97,9 +103,19 @@ volume_ids.each do |volume_id|
       period_info = periods[period]
       keep = period_info[:keep]
       keeping = period_info[:keeping]
+      offset = 0
+      if period.to_s == "daily"
+        offset = hourly_offset
+      elsif period.to_s == "weekly"
+        offset = daily_offset
+      elsif period.to_s == "monthly"
+        offset = weekly_offset
+      elsif period.to_s == "yearly"
+        offset = monthly_offset
+      end
       
       time_string = time.strftime period_info[:format]
-      if Time.now - time < keep * period_info[:seconds]
+      if Time.now - time < keep * period_info[:seconds] + offset
         if !keeping.key?(time_string) && keeping.length < keep
           keep_reason = period
           keeping[time_string] = snapshot
