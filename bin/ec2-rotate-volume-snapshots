@@ -13,11 +13,11 @@ opts = {
 }
 
 time_periods = {
-  :hourly  => { :seconds => 60 * 60, :format => '%Y-%m-%d-%H', :keep => 0, :keeping => {} },
-  :daily   => { :seconds => 24 * 60 * 60, :format => '%Y-%m-%d', :keep => 0, :keeping => {} },
-  :weekly  => { :seconds => 7 * 24 * 60 * 60, :format => '%Y-%W', :keep => 0, :keeping => {} },
-  :monthly => { :seconds => 30 * 24 * 60 * 60, :format => '%Y-%m', :keep => 0, :keeping => {} },
-  :yearly  => { :seconds => 12 * 30 * 24 * 60 * 60, :format => '%Y', :keep => 0, :keeping => {} },
+  :hourly  => { :seconds => 60 * 60, :offset => 0, :format => '%Y-%m-%d-%H', :keep => 0, :keeping => {} },
+  :daily   => { :seconds => 24 * 60 * 60, :offset => 0, :format => '%Y-%m-%d', :keep => 0, :keeping => {} },
+  :weekly  => { :seconds => 7 * 24 * 60 * 60, :offset => 0, :format => '%Y-%W', :keep => 0, :keeping => {} },
+  :monthly => { :seconds => 30 * 24 * 60 * 60, :offset => 0, :format => '%Y-%m', :keep => 0, :keeping => {} },
+  :yearly  => { :seconds => 12 * 30 * 24 * 60 * 60, :offset => 0, :format => '%Y', :keep => 0, :keeping => {} },
 }
 
 OptionParser.new do |o|
@@ -66,18 +66,25 @@ volume_ids = ARGV
 ec2 = RightAws::Ec2.new(opts[:aws_access_key], opts[:aws_secret_access_key], :region => opts[:aws_region])
 all_snapshots = ec2.describe_snapshots(:filters => { 'volume-id' => volume_ids })
 
+# keep track of how many deletes we've done per throttle
+deletes = 0
+
+# poor man's way to get a deep copy of our time_periods definition hash
+periods = Marshal.load(Marshal.dump(time_periods))
+
+# set period offsets based on how many we are keeping of each period
+offset_running_total = 0
+periods.keys.sort { |a, b| periods[a][:seconds] <=> periods[b][:seconds] }.each do |period|
+  periods[period][:offset] = offset_running_total
+  offset_running_total += periods[period][:seconds] * periods[period][:keep]
+end
+
 volume_ids.each do |volume_id|
   if volume_id !~ /^vol-/
     # sanity check
     puts "Invalid volume id: #{volume_id}"
     exit 1
   end
-  
-  # keep track of how many deletes we've done per throttle
-  deletes = 0
-  
-  # poor man's way to get a deep copy of our time_periods definition hash
-  periods = Marshal.load(Marshal.dump(time_periods))
   
   snapshots_to_keep = {}
   snapshots = all_snapshots.select {|ss| ss[:aws_volume_id] == volume_id }.sort {|a,b| a[:aws_started_at] <=> b[:aws_started_at] }
@@ -99,7 +106,7 @@ volume_ids.each do |volume_id|
       keeping = period_info[:keeping]
       
       time_string = time.strftime period_info[:format]
-      if Time.now - time < keep * period_info[:seconds]
+      if Time.now - time < keep * period_info[:seconds] + period_info[:offset]
         if !keeping.key?(time_string) && keeping.length < keep
           keep_reason = period
           keeping[time_string] = snapshot
